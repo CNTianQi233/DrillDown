@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # 允许手动触发
+
+env:
+  JAVA_VERSION: '11'
+  ANDROID_COMPILE_CMD: ./gradlew android:assembleFullRelease
+  DESKTOP_COMPILE_CMD: ./gradlew desktop:dist
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # -------------------- 基础环境配置 --------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          architecture: x64 # 强制 64 位环境 [6,7](@ref)
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2 # 自动配置 Android 环境 [1,5](@ref)
+
+      # -------------------- 密钥库安全注入 --------------------
+      - name: Inject Keystore Credentials
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }} # Base64 加密的 .jks 文件
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
+          echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+          echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+          echo "RELEASE_STORE_PASSWORD=$STORE_PASSWORD" >> $GITHUB_ENV
+          echo "RELEASE_STORE_FILE=android/app/keystore.jks" >> $GITHUB_ENV
+
+      - name: Configure gradle.properties
+        run: |
+          cat << EOF >> gradle.properties
+          android.signingConfigs.release.storeFile=${{ env.RELEASE_STORE_FILE }}
+          android.signingConfigs.release.storePassword=${{ env.RELEASE_STORE_PASSWORD }}
+          android.signingConfigs.release.keyAlias=${{ env.RELEASE_KEY_ALIAS }}
+          android.signingConfigs.release.keyPassword=${{ env.RELEASE_KEY_PASSWORD }}
+          EOF
+
+      # -------------------- 构建阶段 --------------------
+      - name: Build Android Release
+        run: |
+          chmod +x gradlew # 确保执行权限 [1](@ref)
+          ${{ env.ANDROID_COMPILE_CMD }}
+        env:
+          ORG_GRADLE_PROJECT_android.injected.signing.store.file: ${{ env.RELEASE_STORE_FILE }}
+          ORG_GRADLE_PROJECT_android.injected.signing.store.password: ${{ env.RELEASE_STORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_android.injected.signing.key.alias: ${{ env.RELEASE_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_android.injected.signing.key.password: ${{ env.RELEASE_KEY_PASSWORD }}
+
+      - name: Build Desktop Version
+        run: ${{ env.DESKTOP_COMPILE_CMD }}
+
+      # -------------------- 产物归档 --------------------
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-binaries
+          path: |
+            android/build/outputs/apk/full/release/*.apk
+            desktop/build/libs/*.jar
