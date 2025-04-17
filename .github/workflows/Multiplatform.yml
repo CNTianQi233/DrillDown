@@ -1,0 +1,75 @@
+name: Multiplatform Build CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  JAVA_VERSION: '11'
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dfile.encoding=UTF-8"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    # -------------------- 基础环境配置 --------------------
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 完整检出历史用于版本分析
+
+    # -------------------- 64 位 Java 环境 --------------------
+    - name: Setup Java 11 (64-bit)
+      uses: actions/setup-java@v4[6](@ref)
+      with:
+        distribution: 'temurin'
+        java-version: ${{ env.JAVA_VERSION }}
+        architecture: x64  # 强制使用 64 位 JVM[4](@ref)
+        cache: 'gradle'    # 自动缓存依赖加速构建
+
+    # -------------------- 密钥库安全注入 --------------------
+    - name: Inject Signing Keystore
+      env:
+        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}  # Base64 加密的 .jks 文件
+        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+      run: |
+        echo "$KEYSTORE_BASE64" | base64 -d > android/keystore.jks
+        echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+        echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+        echo "RELEASE_STORE_PASSWORD=$STORE_PASSWORD" >> $GITHUB_ENV
+
+    # -------------------- 动态配置 gradle.properties --------------------
+    - name: Configure Gradle Properties
+      run: |
+        cat << EOF >> gradle.properties
+        android.signingConfigs.release.storeFile=android/keystore.jks
+        android.signingConfigs.release.storePassword=${{ env.RELEASE_STORE_PASSWORD }}
+        android.signingConfigs.release.keyAlias=${{ env.RELEASE_KEY_ALIAS }}
+        android.signingConfigs.release.keyPassword=${{ env.RELEASE_KEY_PASSWORD }}
+        EOF
+
+    # -------------------- 多平台构建 --------------------
+    - name: Build Android Release
+      run: |
+        chmod +x gradlew
+        ./gradlew android:assembleFullRelease --stacktrace
+      env:
+        ORG_GRADLE_PROJECT_android.injected.signing.store.file: ${{ env.RELEASE_STORE_FILE }}[3](@ref)
+
+    - name: Build Desktop Version
+      run: ./gradlew desktop:dist
+
+    # -------------------- 产物归档 --------------------
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3[1](@ref)
+      with:
+        name: release-binaries
+        path: |
+          android/build/outputs/apk/full/release/*.apk
+          desktop/build/libs/*.jar
