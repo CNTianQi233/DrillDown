@@ -58,6 +58,8 @@ project(":android") {
 
     android.ndkVersion = '21.4.7075529'
 
+    compileSdkVersion 30
+
     configurations { natives }
 
     dependencies {
